@@ -1,0 +1,17 @@
+# Copy this file to `local.properties` (already gitignored) in the `android/` root and fill in
+# the values for your machine. `local.properties` is generated/managed by Android Studio and
+# must never be committed.
+
+# Path to your Android SDK installation (Android Studio fills this in automatically).
+sdk.dir=/path/to/Android/sdk
+
+# Optional. Stripe *publishable* key (pk_test_... / pk_live_...).
+#
+# This is NOT required for the normal in-app flow: the Terminal SDK's ConnectionTokenProvider
+# calls the backend's POST /api/v1/terminal/connection-token endpoint, and the backend (which
+# holds the Stripe *secret* key) mints the connection token server-side. The publishable key is
+# only wired up here (exposed as BuildConfig.STRIPE_PUBLISHABLE_KEY) in case a future feature
+# needs client-side Stripe API calls that require it.
+#
+# Never put a Stripe *secret* key (sk_...) anywhere in this app.
+STRIPE_PUBLISHABLE_KEY=pk_test_your_key_here

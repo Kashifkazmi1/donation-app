@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Backups are disabled at the application level (android:allowBackup="false" in the manifest)
+  because this app stores a JWT and staff-configured backend settings that should not be
+  restored onto a different device. This file is kept for documentation / future-proofing only.
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="." />
+    <exclude domain="database" path="." />
+</full-backup-content>

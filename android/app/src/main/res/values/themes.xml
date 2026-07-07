@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base application theme: Compose draws all UI, this is only used for the launch/splash
+         window background before Compose takes over, and by the system for the app icon shape. -->
+    <style name="Theme.DonationTerminal" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:statusBarColor">@android:color/white</item>
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>

@@ -19,21 +19,23 @@ import com.givewp.donationterminal.domain.model.TerminalLocation
 import com.givewp.donationterminal.domain.repository.ReaderConnectionStatus
 import com.givewp.donationterminal.domain.repository.ReaderRepository
 import com.stripe.stripeterminal.Terminal
-import com.stripe.stripeterminal.external.callable.BluetoothReaderListener
 import com.stripe.stripeterminal.external.callable.Callback
 import com.stripe.stripeterminal.external.callable.Cancelable
 import com.stripe.stripeterminal.external.callable.DiscoveryListener
+import com.stripe.stripeterminal.external.callable.MobileReaderListener
 import com.stripe.stripeterminal.external.callable.PaymentIntentCallback
 import com.stripe.stripeterminal.external.callable.ReaderCallback
 import com.stripe.stripeterminal.external.callable.TerminalListener
 import com.stripe.stripeterminal.external.models.BatteryStatus
 import com.stripe.stripeterminal.external.models.ConnectionConfiguration
 import com.stripe.stripeterminal.external.models.ConnectionStatus
+import com.stripe.stripeterminal.external.models.DisconnectReason
 import com.stripe.stripeterminal.external.models.DiscoveryConfiguration
 import com.stripe.stripeterminal.external.models.PaymentIntent
 import com.stripe.stripeterminal.external.models.PaymentIntentStatus
 import com.stripe.stripeterminal.external.models.PaymentStatus
 import com.stripe.stripeterminal.external.models.Reader
+import com.stripe.stripeterminal.external.models.TerminalErrorCode
 import com.stripe.stripeterminal.external.models.TerminalException
 import com.stripe.stripeterminal.log.LogLevel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -56,13 +58,22 @@ import javax.inject.Singleton
  * directly -- both for unit-testability and because the SDK needs an Activity/Application
  * context in places that a plain ViewModel shouldn't reach for directly.
  *
- * NOTE ON SDK VERSION: written against the stripeterminal-core 3.x API surface (Terminal
- * singleton initialized once via [Terminal.initTerminal], per-reader-type
- * [DiscoveryConfiguration]/[ConnectionConfiguration] subtypes, callback-based
- * collect/confirm PaymentIntent flow). If the pinned SDK version in
- * gradle/libs.versions.toml drifts, re-check these call sites against that version's docs --
- * this file could not be compiled in the sandbox this project was authored in (no Android SDK /
- * Stripe Maven access), so treat it as reviewed-but-unverified by a real compiler.
+ * NOTE ON SDK VERSION: written against the stripeterminal-core 5.x API surface -- pinned in
+ * gradle/libs.versions.toml as `stripeTerminal`. Key points that differ from older (pre-4.0)
+ * versions of this SDK, confirmed against the SDK's public CHANGELOG:
+ *  - `Terminal.init` (not the older `Terminal.initTerminal`).
+ *  - A single unified `Terminal.connectReader(reader, connectionConfig, callback)` for all
+ *    reader types (the older per-type `connectBluetoothReader`/`connectUsbReader` are gone).
+ *  - The reader listener is now supplied *inside* `ConnectionConfiguration.BluetoothConnectionConfiguration`
+ *    (as a [MobileReaderListener]) instead of as a separate parameter to the connect call.
+ *  - `MobileReaderListener` (formerly `ReaderListener`/`BluetoothReaderListener` in older
+ *    versions) extends `ReaderReconnectionListener` and owns `onDisconnect` -- `TerminalListener`
+ *    no longer has `onUnexpectedReaderDisconnect`.
+ *  - `TerminalErrorCode` is a standalone top-level enum, not nested inside `TerminalException`.
+ * This file could not be compiled in the sandbox this project was authored in (no Android SDK /
+ * Stripe Maven access), so before your first real build, diff these call sites against the
+ * current `com.stripe:stripeterminal-core` version's sample app / API reference -- treat this as
+ * reviewed-against-documentation but unverified by a real compiler.
  */
 @Singleton
 class TerminalManager @Inject constructor(
@@ -86,26 +97,14 @@ class TerminalManager @Inject constructor(
     private val _discoveredReaders = MutableStateFlow<List<DiscoveredReader>>(emptyList())
     override val discoveredReaders: Flow<List<DiscoveredReader>> = _discoveredReaders.asStateFlow()
 
-    private val _unexpectedDisconnect = MutableStateFlow(0)
-    override val unexpectedDisconnect: Flow<Unit> = callbackFlow {
-        // Re-emitted as a distinct event stream; collectors should treat every element as "now".
-        var last = _unexpectedDisconnect.value
-        val job = kotlinx.coroutines.GlobalScope.launch {
-            _unexpectedDisconnect.asStateFlow().collect { value ->
-                if (value != last) {
-                    last = value
-                    trySend(Unit)
-                }
-            }
-        }
-        awaitClose { job.cancel() }
-    }
+    private val _unexpectedDisconnect = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    override val unexpectedDisconnect: Flow<Unit> = _unexpectedDisconnect.asSharedFlow()
 
     private val terminalListener = object : TerminalListener {
         override fun onConnectionStatusChange(status: ConnectionStatus) {
             _connectionStatus.value = when (status) {
                 ConnectionStatus.CONNECTED -> ReaderConnectionStatus.CONNECTED
-                ConnectionStatus.CONNECTING -> ReaderConnectionStatus.CONNECTING
+                ConnectionStatus.CONNECTING, ConnectionStatus.RECONNECTING -> ReaderConnectionStatus.CONNECTING
                 else -> ReaderConnectionStatus.NOT_CONNECTED
             }
         }
@@ -114,15 +113,12 @@ class TerminalManager @Inject constructor(
             // Exposed for future UI (e.g. a live "waiting for card" indicator); the payment
             // ViewModel currently drives its own state machine from the collect/confirm calls.
         }
-
-        override fun onUnexpectedReaderDisconnect(reader: Reader) {
-            _connectionStatus.value = ReaderConnectionStatus.NOT_CONNECTED
-            _batteryLevel.value = null
-            _unexpectedDisconnect.value += 1
-        }
     }
 
-    private val bluetoothReaderListener = object : BluetoothReaderListener {
+    // MobileReaderListener extends ReaderReconnectionListener as of SDK v4+: it owns both the
+    // battery/firmware callbacks *and* disconnect/reconnect handling that used to live on
+    // TerminalListener.onUnexpectedReaderDisconnect (removed in v4).
+    private val mobileReaderListener = object : MobileReaderListener {
         override fun onBatteryLevelUpdate(batteryLevel: Float, isCharging: Boolean, status: BatteryStatus) {
             _batteryLevel.value = batteryLevel
         }
@@ -130,11 +126,32 @@ class TerminalManager @Inject constructor(
         override fun onReportReaderSoftwareUpdateProgress(progress: Float) {
             // Firmware update progress -- not surfaced in this app's UI, no user action needed.
         }
+
+        override fun onDisconnect(reason: DisconnectReason) {
+            _connectionStatus.value = ReaderConnectionStatus.NOT_CONNECTED
+            _batteryLevel.value = null
+            _unexpectedDisconnect.tryEmit(Unit)
+        }
+
+        override fun onReaderReconnectStarted(reader: Reader, cancelReconnect: Cancelable, reason: DisconnectReason) {
+            _connectionStatus.value = ReaderConnectionStatus.CONNECTING
+        }
+
+        override fun onReaderReconnectSucceeded(reader: Reader) {
+            _connectionStatus.value = ReaderConnectionStatus.CONNECTED
+            _batteryLevel.value = reader.batteryLevel
+        }
+
+        override fun onReaderReconnectFailed(reader: Reader) {
+            _connectionStatus.value = ReaderConnectionStatus.NOT_CONNECTED
+            _batteryLevel.value = null
+            _unexpectedDisconnect.tryEmit(Unit)
+        }
     }
 
     private fun ensureInitialized() {
         if (Terminal.isInitialized()) return
-        Terminal.initTerminal(
+        Terminal.init(
             context.applicationContext,
             LogLevel.NONE,
             connectionTokenProviderProvider.get(),
@@ -153,8 +170,16 @@ class TerminalManager @Inject constructor(
     }
 
     override fun requiredPermissions(): Array<String> {
+        // Stripe's Terminal SDK requires location permission for Bluetooth reader discovery on
+        // every Android version -- even on API 31+ where BLUETOOTH_SCAN can otherwise be
+        // declared `neverForLocation`, so it's always requested alongside the Bluetooth runtime
+        // permissions here, not only pre-S.
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT)
+            arrayOf(
+                Manifest.permission.BLUETOOTH_SCAN,
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.ACCESS_FINE_LOCATION
+            )
         } else {
             arrayOf(Manifest.permission.ACCESS_FINE_LOCATION)
         }
@@ -177,9 +202,13 @@ class TerminalManager @Inject constructor(
         val config = DiscoveryConfiguration.BluetoothDiscoveryConfiguration(isSimulated = false)
 
         return suspendCancellableCoroutine { continuation ->
-            val discoveryListener = DiscoveryListener { readers ->
-                lastDiscoveredSdkReaders = readers
-                _discoveredReaders.value = readers.map { it.toDomain() }
+            // Written as an explicit anonymous object (rather than a SAM lambda) since it's not
+            // guaranteed the SDK declares this as a Kotlin `fun interface` across versions.
+            val discoveryListener = object : DiscoveryListener {
+                override fun onUpdateDiscoveredReaders(readers: List<Reader>) {
+                    lastDiscoveredSdkReaders = readers
+                    _discoveredReaders.value = readers.map { it.toDomain() }
+                }
             }
 
             discoveryCancelable = Terminal.getInstance().discoverReaders(
@@ -227,17 +256,21 @@ class TerminalManager @Inject constructor(
         stopDiscovery()
         _connectionStatus.value = ReaderConnectionStatus.CONNECTING
 
+        // `autoReconnectOnUnexpectedDisconnect = false` here: this app surfaces disconnects to the
+        // user explicitly (see [unexpectedDisconnect]) and lets the Reader Connection screen own
+        // the retry flow, rather than having the SDK reconnect silently in the background. Note
+        // that SDK v4+ defaults this to `true`; we explicitly opt back out for that reason.
+        // The mobile reader listener is now part of the connection config (see class doc).
         val connectionConfig = ConnectionConfiguration.BluetoothConnectionConfiguration(
             locationId = locationId,
-            autoReconnectOnUnexpectedDisconnect = true,
-            bluetoothReaderReconnectionListener = null
+            autoReconnectOnUnexpectedDisconnect = false,
+            mobileReaderListener = mobileReaderListener
         )
 
         return suspendCancellableCoroutine { continuation ->
-            Terminal.getInstance().connectBluetoothReader(
+            Terminal.getInstance().connectReader(
                 sdkReader,
                 connectionConfig,
-                bluetoothReaderListener,
                 object : ReaderCallback {
                     override fun onSuccess(connectedReader: Reader) {
                         _connectionStatus.value = ReaderConnectionStatus.CONNECTED
@@ -302,7 +335,7 @@ class TerminalManager @Inject constructor(
             )
         }
 
-        val charge = finalIntent.getCharges().firstOrNull()
+        val charge = finalIntent.charges.firstOrNull()
         val cardPresentDetails = charge?.paymentMethodDetails?.cardPresentDetails
         return AppResult.Success(
             PaymentCollectionResult(
@@ -406,16 +439,18 @@ class TerminalManager @Inject constructor(
     )
 
     private fun TerminalException.toAppError(): AppError {
+        // TerminalErrorCode is a standalone top-level enum as of SDK v4+ (previously nested
+        // inside TerminalException).
         val type = when (errorCode) {
-            TerminalException.TerminalErrorCode.CANCELED -> AppErrorType.STRIPE_CANCELLED
-            TerminalException.TerminalErrorCode.DECLINED_BY_READER,
-            TerminalException.TerminalErrorCode.DECLINED_BY_STRIPE_API -> AppErrorType.STRIPE_DECLINED
-            TerminalException.TerminalErrorCode.BLUETOOTH_DISABLED,
-            TerminalException.TerminalErrorCode.BLUETOOTH_SCAN_TIMED_OUT -> AppErrorType.BLUETOOTH_DISABLED
-            TerminalException.TerminalErrorCode.BLUETOOTH_PERMISSION_DENIED,
-            TerminalException.TerminalErrorCode.LOCATION_PERMISSION_DENIED -> AppErrorType.PERMISSION_DENIED
-            TerminalException.TerminalErrorCode.READER_DISCONNECTED -> AppErrorType.READER_DISCONNECTED
-            TerminalException.TerminalErrorCode.REQUEST_TIMED_OUT -> AppErrorType.TIMEOUT
+            TerminalErrorCode.CANCELED -> AppErrorType.STRIPE_CANCELLED
+            TerminalErrorCode.DECLINED_BY_READER,
+            TerminalErrorCode.DECLINED_BY_STRIPE_API -> AppErrorType.STRIPE_DECLINED
+            TerminalErrorCode.BLUETOOTH_DISABLED,
+            TerminalErrorCode.BLUETOOTH_SCAN_TIMED_OUT -> AppErrorType.BLUETOOTH_DISABLED
+            TerminalErrorCode.BLUETOOTH_PERMISSION_DENIED,
+            TerminalErrorCode.LOCATION_PERMISSION_DENIED -> AppErrorType.PERMISSION_DENIED
+            TerminalErrorCode.READER_DISCONNECTED -> AppErrorType.READER_DISCONNECTED
+            TerminalErrorCode.REQUEST_TIMED_OUT -> AppErrorType.TIMEOUT
             else -> AppErrorType.UNKNOWN
         }
         return AppError(type, errorCode?.name ?: "TERMINAL_ERROR", errorMessage ?: message ?: "Reader error")

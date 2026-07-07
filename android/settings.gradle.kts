@@ -10,9 +10,8 @@ dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
+        // Stripe Terminal SDK (stripeterminal-core) is published directly to Maven Central.
         mavenCentral()
-        // Stripe Terminal SDK is published to Stripe's own Maven repository.
-        maven { url = uri("https://mvn-central-stripe.stripe.com/release") }
     }
 }
 

@@ -16,7 +16,7 @@ coroutines = "1.8.1"
 room = "2.6.1"
 datastore = "1.1.1"
 securityCrypto = "1.1.0-alpha06"
-stripeTerminal = "3.6.0"
+stripeTerminal = "5.6.0"
 junit = "4.13.2"
 mockk = "1.13.12"
 turbine = "1.1.0"
@@ -69,6 +69,7 @@ security-crypto = { group = "androidx.security", name = "security-crypto", versi
 stripe-terminal-core = { group = "com.stripe", name = "stripeterminal-core", version.ref = "stripeTerminal" }
 
 junit = { group = "junit", name = "junit", version.ref = "junit" }
+kotlin-test = { group = "org.jetbrains.kotlin", name = "kotlin-test", version.ref = "kotlin" }
 mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
 kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }

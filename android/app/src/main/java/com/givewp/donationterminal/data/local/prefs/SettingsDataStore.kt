@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.givewp.donationterminal.di.DefaultApiBaseUrl
 import com.givewp.donationterminal.domain.model.AppSettings
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.Flow
@@ -19,7 +20,7 @@ private val Context.settingsDataStore by preferencesDataStore(name = "donation_t
 @Singleton
 class SettingsDataStore @Inject constructor(
     @ApplicationContext private val context: Context,
-    private val defaultApiBaseUrl: String
+    @DefaultApiBaseUrl private val defaultApiBaseUrl: String
 ) {
     private object Keys {
         val API_BASE_URL = stringPreferencesKey("api_base_url")

@@ -129,6 +129,7 @@ dependencies {
     implementation(libs.stripe.terminal.core)
 
     testImplementation(libs.junit)
+    testImplementation(libs.kotlin.test)
     testImplementation(libs.mockk)
     testImplementation(libs.turbine)
     testImplementation(libs.kotlinx.coroutines.test)

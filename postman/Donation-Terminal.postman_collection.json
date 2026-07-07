@@ -1,0 +1,210 @@
+{
+  "info": {
+    "name": "Donation Terminal API",
+    "description": "Backend API for the Stripe Terminal + GiveWP donation terminal system. See docs/API_CONTRACT.md in the repo for the authoritative spec. Run 'Login' first -- it stores the JWT into the {{token}} collection variable automatically via its Tests script, and every other request uses {{token}} in its Authorization header.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000/api/v1", "type": "string" },
+    { "key": "token", "value": "", "type": "string" },
+    { "key": "paymentIntentId", "value": "", "type": "string" },
+    { "key": "idempotencyKey", "value": "", "type": "string" },
+    { "key": "givewpBaseUrl", "value": "https://your-wordpress-site.example.org/wp-json/donation-terminal/v1", "type": "string" },
+    { "key": "givewpApiKey", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "Auth",
+      "item": [
+        {
+          "name": "Login",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body && body.data && body.data.token) {",
+                  "    pm.collectionVariables.set('token', body.data.token);",
+                  "    console.log('Saved JWT to {{token}}');",
+                  "}",
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));",
+                  "pm.test('Response has token', () => pm.expect(body.data.token).to.be.a('string'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"staff1\",\n  \"password\": \"change-me\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/auth/login", "host": ["{{baseUrl}}"], "path": ["auth", "login"] },
+            "description": "Provision this staff account first with:\nnpm run create-user -- --username=staff1 --password=change-me --name=\"Staff One\" --role=staff\n(run from the backend/ directory)."
+          }
+        },
+        {
+          "name": "Logout",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{baseUrl}}/auth/logout", "host": ["{{baseUrl}}"], "path": ["auth", "logout"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Terminal",
+      "item": [
+        {
+          "name": "Create Connection Token",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{baseUrl}}/terminal/connection-token", "host": ["{{baseUrl}}"], "path": ["terminal", "connection-token"] },
+            "description": "Consumed by the Android app's ConnectionTokenProvider -- not something you'd normally call from Postman, included for completeness/debugging."
+          }
+        },
+        {
+          "name": "Reader Status",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": { "raw": "{{baseUrl}}/terminal/reader-status", "host": ["{{baseUrl}}"], "path": ["terminal", "reader-status"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Payments",
+      "item": [
+        {
+          "name": "Create Payment Intent",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const body = pm.response.json();",
+                  "if (body && body.data && body.data.paymentIntentId) {",
+                  "    pm.collectionVariables.set('paymentIntentId', body.data.paymentIntentId);",
+                  "}",
+                  "pm.test('Status is 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": 2500,\n  \"currency\": \"usd\",\n  \"anonymous\": false,\n  \"donor\": {\n    \"firstName\": \"Jane\",\n    \"lastName\": \"Doe\",\n    \"email\": \"jane@example.com\",\n    \"phone\": \"+15551234567\"\n  },\n  \"idempotencyKey\": \"{{$guid}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/payments/intent", "host": ["{{baseUrl}}"], "path": ["payments", "intent"] },
+            "description": "amount is in the smallest currency unit (cents). idempotencyKey must be a UUID v4 -- Postman's {{$guid}} dynamic variable generates one per request."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Donations",
+      "item": [
+        {
+          "name": "Complete Donation",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Authorization", "value": "Bearer {{token}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"paymentIntentId\": \"{{paymentIntentId}}\",\n  \"idempotencyKey\": \"{{$guid}}\"\n}"
+            },
+            "url": { "raw": "{{baseUrl}}/donations/complete", "host": ["{{baseUrl}}"], "path": ["donations", "complete"] },
+            "description": "Only succeeds once the referenced PaymentIntent actually shows status=succeeded on Stripe -- i.e. only meaningful after a real (or simulated) card was collected via the Terminal SDK, not from Postman alone. Included so you can inspect the exact response shape / re-drive the GiveWP bridge call manually while debugging."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Transactions",
+      "item": [
+        {
+          "name": "List Transactions",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Authorization", "value": "Bearer {{token}}" }],
+            "url": {
+              "raw": "{{baseUrl}}/transactions?page=1&pageSize=20",
+              "host": ["{{baseUrl}}"],
+              "path": ["transactions"],
+              "query": [
+                { "key": "page", "value": "1" },
+                { "key": "pageSize", "value": "20" },
+                { "key": "status", "value": "completed", "disabled": true }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "url": { "raw": "{{baseUrl}}/health", "host": ["{{baseUrl}}"], "path": ["health"] }
+          }
+        }
+      ]
+    },
+    {
+      "name": "WordPress Bridge (called by backend, shown for debugging)",
+      "item": [
+        {
+          "name": "Bridge Health",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "X-API-Key", "value": "{{givewpApiKey}}" }],
+            "url": {
+              "raw": "{{givewpBaseUrl}}/health",
+              "host": ["{{givewpBaseUrl}}"],
+              "path": ["health"]
+            }
+          }
+        },
+        {
+          "name": "Bridge Create Donation",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "X-API-Key", "value": "{{givewpApiKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"amount\": \"25.00\",\n  \"currency\": \"USD\",\n  \"firstName\": \"Jane\",\n  \"lastName\": \"Doe\",\n  \"email\": \"jane@example.com\",\n  \"phone\": \"+15551234567\",\n  \"anonymous\": false,\n  \"gateway\": \"stripe_terminal\",\n  \"status\": \"publish\",\n  \"stripePaymentIntentId\": \"pi_example\",\n  \"stripeChargeId\": \"ch_example\",\n  \"stripeTransactionId\": \"ch_example\",\n  \"formId\": null,\n  \"date\": \"2026-07-07T12:00:00.000Z\"\n}"
+            },
+            "url": {
+              "raw": "{{givewpBaseUrl}}/donations",
+              "host": ["{{givewpBaseUrl}}"],
+              "path": ["donations"]
+            },
+            "description": "Talks directly to the WordPress bridge plugin, bypassing the Node backend -- useful for isolating whether an issue is in the backend or in the WordPress plugin. Requires the two collection variables below."
+          }
+        }
+      ]
+    }
+  ]
+}
